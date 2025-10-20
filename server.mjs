@@ -15,7 +15,7 @@ const PORT = process.env.PORT || 5000;
 const NODE_ENV = process.env.NODE_ENV || "development";
 const RAW_ORIGINS =
   process.env.CORS_ORIGINS ||
-  "https://loupingg.github.io,http://127.0.0.1:5500,http://localhost:5500";
+  "https://loupingg.github.io/MochiC,https://loupingg.github.io,http://127.0.0.1:5500,http://localhost:5500";
 const ALLOWED_ORIGINS = RAW_ORIGINS.split(",")
   .map((s) => s.trim())
   .filter(Boolean);
