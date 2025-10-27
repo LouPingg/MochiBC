@@ -80,11 +80,13 @@ function extractToken(req) {
 
 function requireAdmin(req, res, next) {
   const token = extractToken(req);
+  console.log("🔑 requireAdmin check | token present:", !!token);
   if (!token) return res.status(401).json({ error: "unauthorized" });
   try {
     jwt.verify(token, JWT_SECRET);
     next();
   } catch {
+    console.log("❌ invalid token");
     return res.status(401).json({ error: "invalid token" });
   }
 }
