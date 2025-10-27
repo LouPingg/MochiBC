@@ -63,9 +63,6 @@ app.use(
   })
 );
 
-app.use(express.json());
-app.use(cookieParser());
-
 /* ========= Cloudinary ========= */
 const CLOUD_OK = !!(
   CLOUDINARY_CLOUD_NAME &&
@@ -94,6 +91,10 @@ async function cloudUploadFromBuffer(buffer, folder) {
     stream.end(buffer);
   });
 }
+
+/* ========= Middlewares ========= */
+app.use(express.json());
+app.use(cookieParser());
 
 /* ========= Auth ========= */
 function extractToken(req) {
@@ -153,11 +154,12 @@ app.get("/auth/me", (req, res) => {
 /* ========= Upload Photo ========= */
 app.post("/photos", requireAdmin, upload.single("file"), async (req, res) => {
   try {
+    console.log("File received:", req.file?.originalname); // debug
     const { albumId, orientation } = req.body || {};
     if (!CLOUD_OK)
       return res.status(400).json({ error: "Cloudinary not configured" });
+    if (!req.file) return res.status(400).json({ error: "No file uploaded" });
 
-    // Upload vers Cloudinary dans un sous-dossier par album
     const up = await cloudUploadFromBuffer(
       req.file.buffer,
       `mochi/${albumId || "default"}`
@@ -192,7 +194,7 @@ app.delete("/delete/:public_id", requireAdmin, async (req, res) => {
 app.get("/images", async (req, res) => {
   try {
     const { resources } = await cloudinary.search
-      .expression("folder:mochi") // lister toutes les images du dossier
+      .expression("folder:mochi")
       .sort_by("created_at", "desc")
       .max_results(100)
       .execute();
