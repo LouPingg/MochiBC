@@ -265,6 +265,12 @@ app.use((_req, res) =>
   res.status(404).type("text/plain").send("404 – Mochi backend (Express)")
 );
 
+console.log("Cloudinary config:", {
+  cloud_name: CLOUDINARY_CLOUD_NAME,
+  api_key: CLOUDINARY_API_KEY ? "OK" : "MISSING",
+  api_secret: CLOUDINARY_API_SECRET ? "OK" : "MISSING",
+});
+
 /* ========= START ========= */
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`✅ Server listening on 0.0.0.0:${PORT}`);
