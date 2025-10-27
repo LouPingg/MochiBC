@@ -125,28 +125,43 @@ app.get("/auth/me", (req, res) => {
  * GET /albums
  * Liste tous les dossiers mochi/* (un dossier = un album)
  */
+/* ========= Albums persistants (Cloudinary) ========= */
 app.get("/albums", async (_req, res) => {
   try {
-    const { resources } = await cloudinary.search
-      .expression("folder:mochi/*")
-      .sort_by("public_id", "desc")
-      .max_results(100)
-      .execute();
-
-    // on récupère le premier fichier de chaque dossier
-    const albums = {};
-    for (const r of resources) {
-      const folder = r.folder.split("/")[1];
-      if (!albums[folder]) {
-        albums[folder] = {
-          title: folder,
-          coverUrl: r.secure_url,
-          orientation: r.width >= r.height ? "landscape" : "portrait",
-        };
-      }
+    // Vérifie ou crée le dossier racine "mochi"
+    let subFolders;
+    try {
+      const result = await cloudinary.api.sub_folders("mochi");
+      subFolders = result.folders || [];
+    } catch {
+      console.log("[INIT] Creating base folder 'mochi' in Cloudinary…");
+      await cloudinary.api.create_folder("mochi");
+      subFolders = [];
     }
 
-    res.json(Object.values(albums));
+    // Si aucun sous-dossier, renvoie liste vide
+    if (!subFolders.length) return res.json([]);
+
+    // Pour chaque dossier, on récupère la dernière image comme "cover"
+    const albums = await Promise.all(
+      subFolders.map(async (f) => {
+        const search = await cloudinary.search
+          .expression(`folder:${f.path}`)
+          .sort_by("created_at", "desc")
+          .max_results(1)
+          .execute()
+          .catch(() => ({ resources: [] }));
+
+        const cover = search.resources[0];
+        return {
+          title: f.name,
+          coverUrl: cover?.secure_url || "",
+          orientation: cover?.width >= cover?.height ? "landscape" : "portrait",
+        };
+      })
+    );
+
+    res.json(albums);
   } catch (e) {
     console.error("Error listing albums:", e);
     res.status(500).json({ error: "Failed to list albums" });
