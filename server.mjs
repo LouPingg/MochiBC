@@ -15,7 +15,7 @@ const PORT = process.env.PORT || 5000;
 const NODE_ENV = process.env.NODE_ENV || "development";
 const RAW_ORIGINS =
   process.env.CORS_ORIGINS ||
-  "https://loupingg.github.io/Mochi,https://loupingg.github.io,http://127.0.0.1:5500,http://localhost:5500";
+  "https://loupingg.github.io,http://127.0.0.1:5500,http://localhost:5500";
 const ALLOWED_ORIGINS = RAW_ORIGINS.split(",")
   .map((s) => s.trim())
   .filter(Boolean);
@@ -30,20 +30,11 @@ const CLOUDINARY_API_SECRET = process.env.CLOUDINARY_API_SECRET;
 /* ========= APP ========= */
 const app = express();
 
-// ===== DEBUG LOG: all incoming requests =====
+/* ========= DEBUG: log all requests ========= */
 app.use((req, res, next) => {
   console.log("📩 Request:", req.method, req.url, "from", req.headers.origin);
   next();
 });
-
-/* ========= Health / Root ========= */
-app.get("/ping", (_req, res) => res.status(200).type("text/plain").send("ok"));
-app.get("/healthz", (_req, res) =>
-  res.status(200).json({ status: "ok", uptime: process.uptime() })
-);
-app.get("/", (_req, res) =>
-  res.type("text/plain").send("✅ Mochi backend en ligne")
-);
 
 /* ========= CORS ========= */
 app.use((req, res, next) => {
@@ -52,22 +43,19 @@ app.use((req, res, next) => {
     res.header("Access-Control-Allow-Origin", origin);
     res.header("Vary", "Origin");
     res.header("Access-Control-Allow-Credentials", "true");
-    res.header("Access-Control-Allow-Headers", "Content-Type, Authorization");
+    res.header(
+      "Access-Control-Allow-Headers",
+      "Content-Type, Authorization, X-Requested-With"
+    );
     res.header("Access-Control-Allow-Methods", "GET,POST,DELETE,OPTIONS");
   }
   if (req.method === "OPTIONS") return res.sendStatus(204);
   next();
 });
-app.use(
-  cors({
-    credentials: true,
-    origin: (origin, cb) => {
-      if (!origin) return cb(null, true);
-      if (ALLOWED_ORIGINS.includes(origin)) return cb(null, true);
-      return cb(new Error("CORS not allowed: " + origin));
-    },
-  })
-);
+app.use(cors({ credentials: true, origin: ALLOWED_ORIGINS }));
+
+app.use(express.json());
+app.use(cookieParser());
 
 /* ========= Cloudinary ========= */
 const CLOUD_OK = !!(
@@ -84,7 +72,7 @@ if (CLOUD_OK) {
 }
 const upload = multer({ storage: multer.memoryStorage() });
 
-async function cloudUploadFromBuffer(buffer, folder) {
+async function cloudUploadFromBuffer(buffer, folder = "mochi") {
   return new Promise((resolve, reject) => {
     const stream = cloudinary.uploader.upload_stream(
       { folder },
@@ -97,10 +85,6 @@ async function cloudUploadFromBuffer(buffer, folder) {
     stream.end(buffer);
   });
 }
-
-/* ========= Middlewares ========= */
-app.use(express.json());
-app.use(cookieParser());
 
 /* ========= Auth ========= */
 function extractToken(req) {
@@ -157,67 +141,61 @@ app.get("/auth/me", (req, res) => {
   }
 });
 
-/* ========= Upload Photo ========= */
-app.post("/photos", requireAdmin, upload.single("file"), async (req, res) => {
+/* ========= IMAGES ========= */
+app.get("/images", async (_req, res) => {
   try {
-    console.log("File received:", req.file?.originalname); // debug
-    const { albumId, orientation } = req.body || {};
     if (!CLOUD_OK)
       return res.status(400).json({ error: "Cloudinary not configured" });
-    if (!req.file) return res.status(400).json({ error: "No file uploaded" });
 
-    const up = await cloudUploadFromBuffer(
-      req.file.buffer,
-      `mochi/${albumId || "default"}`
-    );
-
-    const orient =
-      orientation || (up.width >= up.height ? "landscape" : "portrait");
-
-    res.status(201).json({
-      url: up.secure_url,
-      public_id: up.public_id,
-      orientation: orient,
-    });
-  } catch (e) {
-    console.error("❌ Upload error:", e);
-    res.status(500).json({ error: e.message || "photo create failed" });
-  }
-});
-
-/* ========= Suppression Cloudinary ========= */
-app.delete("/delete/:public_id", requireAdmin, async (req, res) => {
-  try {
-    await cloudinary.uploader.destroy(req.params.public_id);
-    res.json({ ok: true });
-  } catch (err) {
-    console.error("❌ Delete error:", err);
-    res.status(500).json({ error: "Cloudinary delete failed" });
-  }
-});
-
-/* ========= Lecture Cloudinary persistante ========= */
-app.get("/images", async (req, res) => {
-  try {
-    const { resources } = await cloudinary.search
+    const result = await cloudinary.search
       .expression("folder:mochi")
       .sort_by("created_at", "desc")
       .max_results(100)
       .execute();
 
-    const images = resources.map((r) => ({
-      url: r.secure_url,
+    const images = result.resources.map((r) => ({
       public_id: r.public_id,
+      url: r.secure_url,
       width: r.width,
       height: r.height,
-      folder: r.folder,
       created_at: r.created_at,
     }));
 
     res.json(images);
   } catch (err) {
-    console.error("❌ Cloudinary list error:", err);
-    res.status(500).json({ error: "Cloudinary list failed" });
+    console.error("❌ /images failed:", err);
+    res.status(500).json({ error: "Failed to fetch images" });
+  }
+});
+
+/* ========= UPLOAD ========= */
+app.post("/photos", requireAdmin, upload.single("file"), async (req, res) => {
+  console.log("📸 POST /photos received", {
+    hasFile: !!req.file,
+    body: req.body,
+  });
+  try {
+    let { url, orientation } = req.body || {};
+    if (req.file) {
+      if (!CLOUD_OK)
+        return res.status(400).json({ error: "Cloudinary not configured" });
+      const up = await cloudUploadFromBuffer(req.file.buffer, "mochi");
+      url = up.secure_url;
+      orientation = up.width >= up.height ? "landscape" : "portrait";
+      console.log("✅ Cloudinary uploaded:", up.secure_url);
+    }
+
+    if (!url) return res.status(400).json({ error: "file or url required" });
+
+    const photo = {
+      id: nanoid(10),
+      url,
+      orientation: orientation || "landscape",
+    };
+    res.status(201).json(photo);
+  } catch (e) {
+    console.error("❌ Upload failed:", e);
+    res.status(500).json({ error: e.message || "photo create failed" });
   }
 });
 
