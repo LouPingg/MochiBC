@@ -30,6 +30,12 @@ const CLOUDINARY_API_SECRET = process.env.CLOUDINARY_API_SECRET;
 /* ========= APP ========= */
 const app = express();
 
+// ===== DEBUG LOG: all incoming requests =====
+app.use((req, res, next) => {
+  console.log("📩 Request:", req.method, req.url, "from", req.headers.origin);
+  next();
+});
+
 /* ========= Health / Root ========= */
 app.get("/ping", (_req, res) => res.status(200).type("text/plain").send("ok"));
 app.get("/healthz", (_req, res) =>
