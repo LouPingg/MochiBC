@@ -16,9 +16,7 @@ const NODE_ENV = process.env.NODE_ENV || "development";
 const RAW_ORIGINS =
   process.env.CORS_ORIGINS ||
   "https://loupingg.github.io,http://127.0.0.1:5500,http://localhost:5500";
-const ALLOWED_ORIGINS = RAW_ORIGINS.split(",")
-  .map((s) => s.trim())
-  .filter(Boolean);
+const ALLOWED_ORIGINS = RAW_ORIGINS.split(",").map((s) => s.trim());
 
 const JWT_SECRET = process.env.JWT_SECRET || "change_me_secret";
 const ADMIN_USERNAME = process.env.ADMIN_USERNAME || "admin";
@@ -29,12 +27,6 @@ const CLOUDINARY_API_SECRET = process.env.CLOUDINARY_API_SECRET;
 
 /* ========= APP ========= */
 const app = express();
-
-/* ========= DEBUG: log all requests ========= */
-app.use((req, res, next) => {
-  console.log("📩 Request:", req.method, req.url, "from", req.headers.origin);
-  next();
-});
 
 /* ========= CORS ========= */
 app.use((req, res, next) => {
@@ -58,21 +50,14 @@ app.use(express.json());
 app.use(cookieParser());
 
 /* ========= Cloudinary ========= */
-const CLOUD_OK = !!(
-  CLOUDINARY_CLOUD_NAME &&
-  CLOUDINARY_API_KEY &&
-  CLOUDINARY_API_SECRET
-);
-if (CLOUD_OK) {
-  cloudinary.config({
-    cloud_name: CLOUDINARY_CLOUD_NAME,
-    api_key: CLOUDINARY_API_KEY,
-    api_secret: CLOUDINARY_API_SECRET,
-  });
-}
+cloudinary.config({
+  cloud_name: CLOUDINARY_CLOUD_NAME,
+  api_key: CLOUDINARY_API_KEY,
+  api_secret: CLOUDINARY_API_SECRET,
+});
 const upload = multer({ storage: multer.memoryStorage() });
 
-async function cloudUploadFromBuffer(buffer, folder = "mochi") {
+async function cloudUploadFromBuffer(buffer, folder) {
   return new Promise((resolve, reject) => {
     const stream = cloudinary.uploader.upload_stream(
       { folder },
@@ -86,7 +71,29 @@ async function cloudUploadFromBuffer(buffer, folder = "mochi") {
   });
 }
 
-/* ========= Auth ========= */
+/* ========= “DB” en mémoire ========= */
+const db = {
+  albums: [
+    {
+      id: "a1",
+      title: "Saturday night",
+      photos: [
+        {
+          id: "p1",
+          url: "https://picsum.photos/id/1011/1200/800",
+          orientation: "landscape",
+        },
+        {
+          id: "p2",
+          url: "https://picsum.photos/id/1027/800/1200",
+          orientation: "portrait",
+        },
+      ],
+    },
+  ],
+};
+
+/* ========= AUTH ========= */
 function extractToken(req) {
   if (req.cookies?.token) return req.cookies.token;
   const h = req.headers.authorization || "";
@@ -141,62 +148,58 @@ app.get("/auth/me", (req, res) => {
   }
 });
 
-/* ========= IMAGES ========= */
-app.get("/images", async (_req, res) => {
-  try {
-    if (!CLOUD_OK)
-      return res.status(400).json({ error: "Cloudinary not configured" });
+/* ========= Albums & Photos ========= */
+app.get("/albums", (_req, res) => res.json(db.albums));
 
-    const result = await cloudinary.search
-      .expression("folder:mochi")
-      .sort_by("created_at", "desc")
-      .max_results(100)
-      .execute();
-
-    const images = result.resources.map((r) => ({
-      public_id: r.public_id,
-      url: r.secure_url,
-      width: r.width,
-      height: r.height,
-      created_at: r.created_at,
-    }));
-
-    res.json(images);
-  } catch (err) {
-    console.error("❌ /images failed:", err);
-    res.status(500).json({ error: "Failed to fetch images" });
-  }
+app.post("/albums", requireAdmin, (req, res) => {
+  const { title } = req.body || {};
+  if (!title) return res.status(400).json({ error: "title required" });
+  const album = { id: nanoid(8), title, photos: [] };
+  db.albums.push(album);
+  res.status(201).json(album);
 });
 
-/* ========= UPLOAD ========= */
 app.post("/photos", requireAdmin, upload.single("file"), async (req, res) => {
-  console.log("📸 POST /photos received", {
-    hasFile: !!req.file,
-    body: req.body,
-  });
   try {
-    let { url, orientation } = req.body || {};
-    if (req.file) {
-      if (!CLOUD_OK)
-        return res.status(400).json({ error: "Cloudinary not configured" });
-      const up = await cloudUploadFromBuffer(req.file.buffer, "mochi");
-      url = up.secure_url;
-      orientation = up.width >= up.height ? "landscape" : "portrait";
-      console.log("✅ Cloudinary uploaded:", up.secure_url);
-    }
+    const { albumId, url, orientation } = req.body || {};
+    const album = db.albums.find((a) => a.id === albumId);
+    if (!album) return res.status(404).json({ error: "album not found" });
 
-    if (!url) return res.status(400).json({ error: "file or url required" });
+    let fileUrl = url;
+    let orient = orientation;
+
+    if (req.file) {
+      const up = await cloudUploadFromBuffer(
+        req.file.buffer,
+        `mochi/${albumId}`
+      );
+      fileUrl = up.secure_url;
+      orient = up.width >= up.height ? "landscape" : "portrait";
+    }
 
     const photo = {
       id: nanoid(10),
-      url,
-      orientation: orientation || "landscape",
+      albumId,
+      url: fileUrl,
+      orientation: orient,
     };
+    album.photos.push(photo);
     res.status(201).json(photo);
   } catch (e) {
-    console.error("❌ Upload failed:", e);
     res.status(500).json({ error: e.message || "photo create failed" });
   }
+});
+
+app.delete("/photos/:id", requireAdmin, (req, res) => {
+  const pid = req.params.id;
+  for (const album of db.albums) {
+    const idx = album.photos.findIndex((p) => p.id === pid);
+    if (idx !== -1) {
+      album.photos.splice(idx, 1);
+      return res.json({ ok: true });
+    }
+  }
+  res.status(404).json({ error: "photo not found" });
 });
 
 /* ========= 404 ========= */
@@ -208,6 +211,5 @@ app.use((_req, res) =>
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`✅ Server listening on 0.0.0.0:${PORT}`);
   console.log("CORS allowed:", ALLOWED_ORIGINS);
-  console.log(`Cloudinary configured: ${CLOUD_OK ? "yes" : "no"}`);
   console.log(`NODE_ENV: ${NODE_ENV}`);
 });
