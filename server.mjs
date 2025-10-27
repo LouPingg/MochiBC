@@ -9,28 +9,41 @@ import { v2 as cloudinary } from "cloudinary";
 
 dotenv.config();
 
+/* ========= ENV ========= */
 const PORT = process.env.PORT || 5000;
-const NODE_ENV = process.env.NODE_ENV || "development";
+const NODE_ENV = process.env.NODE_ENV || "production";
 const RAW_ORIGINS =
   process.env.CORS_ORIGINS ||
   "https://loupingg.github.io/Mochi,https://loupingg.github.io,http://127.0.0.1:5500,http://localhost:5500";
 const ALLOWED_ORIGINS = RAW_ORIGINS.split(",").map((s) => s.trim());
-
 const JWT_SECRET = process.env.JWT_SECRET || "dev_secret";
 const ADMIN_USERNAME = process.env.ADMIN_USERNAME || "admin";
 const ADMIN_PASSWORD_HASH = process.env.ADMIN_PASSWORD_HASH || "";
 
+/* ========= CLOUDINARY ========= */
 cloudinary.config({
   cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
   api_key: process.env.CLOUDINARY_API_KEY,
   api_secret: process.env.CLOUDINARY_API_SECRET,
 });
+const upload = multer({ storage: multer.memoryStorage() });
 
+async function cloudUploadFromBuffer(buffer, folder) {
+  return new Promise((resolve, reject) => {
+    const stream = cloudinary.uploader.upload_stream(
+      { folder },
+      (err, result) => (err ? reject(err) : resolve(result))
+    );
+    stream.end(buffer);
+  });
+}
+
+/* ========= APP ========= */
 const app = express();
 app.use(express.json());
 app.use(cookieParser());
 
-/* ====== CORS ====== */
+/* ========= CORS ========= */
 app.use((req, res, next) => {
   const origin = req.headers.origin;
   if (origin && ALLOWED_ORIGINS.includes(origin)) {
@@ -46,9 +59,7 @@ app.use((req, res, next) => {
   next();
 });
 
-/* ====== Upload ====== */
-const upload = multer({ storage: multer.memoryStorage() });
-
+/* ========= AUTH ========= */
 function extractToken(req) {
   if (req.cookies?.token) return req.cookies.token;
   const h = req.headers.authorization || "";
@@ -62,11 +73,10 @@ function requireAdmin(req, res, next) {
     jwt.verify(token, JWT_SECRET);
     next();
   } catch {
-    return res.status(401).json({ error: "invalid token" });
+    res.status(401).json({ error: "invalid token" });
   }
 }
 
-/* ====== AUTH ====== */
 app.post("/auth/login", async (req, res) => {
   const { username, password } = req.body || {};
   if (username !== ADMIN_USERNAME)
@@ -87,7 +97,6 @@ app.post("/auth/login", async (req, res) => {
 
 app.get("/auth/me", (req, res) => {
   const token = extractToken(req);
-  if (!token) return res.json({ authenticated: false });
   try {
     jwt.verify(token, JWT_SECRET);
     res.json({ authenticated: true });
@@ -96,109 +105,47 @@ app.get("/auth/me", (req, res) => {
   }
 });
 
-/* ====== ALBUMS (Cloudinary-only) ====== */
+/* ========= ALBUMS ========= */
 app.get("/albums", async (_req, res) => {
   try {
     const result = await cloudinary.api.sub_folders("mochi");
-    const albums = result.folders.map((f) => ({
-      title: f.name,
-      coverUrl: "",
-      orientation: "portrait",
-    }));
-
-    // Ajoute la première image de chaque dossier comme cover
-    for (const album of albums) {
-      try {
+    const albums = await Promise.all(
+      result.folders.map(async (f) => {
         const imgs = await cloudinary.api.resources({
           type: "upload",
-          prefix: `mochi/${album.title}/`,
+          prefix: `mochi/${f.name}/`,
           max_results: 1,
         });
-        if (imgs.resources.length) {
-          const img = imgs.resources[0];
-          album.coverUrl = img.secure_url;
-          album.orientation =
-            img.width >= img.height ? "landscape" : "portrait";
-        }
-      } catch {}
-    }
-
+        const img = imgs.resources[0];
+        return {
+          title: f.name,
+          coverUrl: img?.secure_url || "",
+          orientation:
+            img && img.width >= img.height ? "landscape" : "portrait",
+        };
+      })
+    );
     res.json(albums);
-  } catch (e) {
-    console.error("List albums error:", e);
+  } catch (err) {
+    console.error(err);
     res.status(500).json({ error: "Failed to list albums" });
   }
 });
 
-/* ====== Create album (with first photo as cover) ====== */
 app.post("/albums", requireAdmin, upload.single("file"), async (req, res) => {
   try {
     const { title } = req.body || {};
     if (!title) return res.status(400).json({ error: "title required" });
-
-    let coverUrl = "";
-    let orientation = "portrait";
-
-    if (req.file) {
-      const result = await new Promise((resolve, reject) => {
-        const stream = cloudinary.uploader.upload_stream(
-          { folder: `mochi/${title}` },
-          (err, uploadRes) => {
-            if (err) reject(err);
-            else resolve(uploadRes);
-          }
-        );
-        stream.end(req.file.buffer);
-      });
-      coverUrl = result.secure_url;
-      orientation = result.width >= result.height ? "landscape" : "portrait";
-    }
-
-    res.status(201).json({ title, coverUrl, orientation });
-  } catch (e) {
-    console.error("Create album error:", e);
-    res.status(500).json({ error: e.message || "album create failed" });
+    const up = await cloudUploadFromBuffer(req.file.buffer, `mochi/${title}`);
+    const orient = up.width >= up.height ? "landscape" : "portrait";
+    res
+      .status(201)
+      .json({ title, coverUrl: up.secure_url, orientation: orient });
+  } catch (err) {
+    res.status(500).json({ error: "Album create failed" });
   }
 });
 
-/* ====== Add photo to album ====== */
-app.post(
-  "/albums/:album/photos",
-  requireAdmin,
-  upload.single("file"),
-  async (req, res) => {
-    try {
-      const album = req.params.album;
-      if (!album) return res.status(400).json({ error: "album required" });
-      if (!req.file) return res.status(400).json({ error: "file required" });
-
-      const result = await new Promise((resolve, reject) => {
-        const stream = cloudinary.uploader.upload_stream(
-          { folder: `mochi/${album}` },
-          (err, uploadRes) => {
-            if (err) reject(err);
-            else resolve(uploadRes);
-          }
-        );
-        stream.end(req.file.buffer);
-      });
-
-      const orientation =
-        result.width >= result.height ? "landscape" : "portrait";
-      res.status(201).json({ url: result.secure_url, orientation });
-    } catch (e) {
-      console.error("Add photo error:", e);
-      res.status(500).json({ error: e.message || "add photo failed" });
-    }
-  }
-);
-
-app.listen(PORT, "0.0.0.0", () => {
-  console.log(`✅ Server listening on 0.0.0.0:${PORT}`);
-  console.log("CORS allowed:", ALLOWED_ORIGINS);
-  console.log(`NODE_ENV: ${NODE_ENV}`);
-});
-// === Photos par album ===
 app.get("/albums/:title/photos", async (req, res) => {
   try {
     const folder = `mochi/${req.params.title}`;
@@ -213,12 +160,11 @@ app.get("/albums/:title/photos", async (req, res) => {
       orientation: r.width >= r.height ? "landscape" : "portrait",
     }));
     res.json(list);
-  } catch (err) {
+  } catch {
     res.status(500).json({ error: "Failed to list photos" });
   }
 });
 
-// === Ajout photo à un album existant ===
 app.post(
   "/albums/:title/photos",
   requireAdmin,
@@ -237,7 +183,6 @@ app.post(
         fileUrl = up.secure_url;
         orient = up.width >= up.height ? "landscape" : "portrait";
       }
-
       if (!fileUrl) return res.status(400).json({ error: "no file or URL" });
       res.status(201).json({ url: fileUrl, orientation: orient });
     } catch (err) {
@@ -245,3 +190,36 @@ app.post(
     }
   }
 );
+
+/* ========= DELETE ========= */
+app.delete("/photos/:id", requireAdmin, async (req, res) => {
+  try {
+    await cloudinary.uploader.destroy(req.params.id);
+    res.json({ ok: true });
+  } catch {
+    res.status(500).json({ error: "Failed to delete photo" });
+  }
+});
+
+app.delete("/albums/:title", requireAdmin, async (req, res) => {
+  try {
+    const folder = `mochi/${req.params.title}`;
+    const resources = await cloudinary.api.resources({
+      type: "upload",
+      prefix: folder + "/",
+      max_results: 100,
+    });
+    for (const r of resources.resources)
+      await cloudinary.uploader.destroy(r.public_id);
+    await cloudinary.api.delete_folder(folder);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Failed to delete album" });
+  }
+});
+
+/* ========= START ========= */
+app.listen(PORT, "0.0.0.0", () => {
+  console.log(`✅ Server running on port ${PORT}`);
+});
