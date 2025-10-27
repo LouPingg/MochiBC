@@ -157,6 +157,12 @@ app.get("/images", async (_req, res) => {
  * → Upload via file ou URL vers Cloudinary
  */
 app.post("/photos", requireAdmin, upload.single("file"), async (req, res) => {
+  console.log(
+    "📸 /photos hit | hasFile =",
+    !!req.file,
+    "| hasUrl =",
+    !!req.body?.url
+  );
   try {
     let fileUrl = req.body.url || "";
     let orient = req.body.orientation || "";
