@@ -15,7 +15,7 @@ const PORT = process.env.PORT || 5000;
 const NODE_ENV = process.env.NODE_ENV || "development";
 const RAW_ORIGINS =
   process.env.CORS_ORIGINS ||
-  "https://loupingg.github.io/MochiC,https://loupingg.github.io,http://127.0.0.1:5500,http://localhost:5500";
+  "https://loupingg.github.io/Mochi,https://loupingg.github.io,http://127.0.0.1:5500,http://localhost:5500";
 const ALLOWED_ORIGINS = RAW_ORIGINS.split(",")
   .map((s) => s.trim())
   .filter(Boolean);
@@ -95,34 +95,9 @@ async function cloudUploadFromBuffer(buffer, folder) {
   });
 }
 
-/* ========= Mini “DB” (mémoire) ========= */
-const db = {
-  albums: [
-    {
-      id: "a1",
-      title: "Saturday night",
-      photos: [
-        {
-          id: "p1",
-          url: "https://picsum.photos/id/1011/1200/800",
-          orientation: "landscape",
-        },
-        {
-          id: "p2",
-          url: "https://picsum.photos/id/1027/800/1200",
-          orientation: "portrait",
-        },
-      ],
-    },
-  ],
-};
-
 /* ========= Auth ========= */
-/* -> Patch : accepte cookie HttpOnly OU header Authorization: Bearer <token> */
 function extractToken(req) {
-  // 1) cookie
   if (req.cookies?.token) return req.cookies.token;
-  // 2) Authorization: Bearer xxx
   const h = req.headers.authorization || "";
   const m = /^Bearer\s+(.+)$/i.exec(h);
   return m ? m[1] : null;
@@ -156,7 +131,7 @@ app.post("/auth/login", async (req, res) => {
     secure: NODE_ENV === "production",
     maxAge: 2 * 60 * 60 * 1000,
   });
-  res.json({ ok: true, token }); // token aussi dispo pour fallback localStorage
+  res.json({ ok: true, token });
 });
 
 app.post("/auth/logout", (_req, res) => {
@@ -175,72 +150,67 @@ app.get("/auth/me", (req, res) => {
   }
 });
 
-/* ========= Albums & Photos ========= */
-app.get("/albums", (_req, res) => res.json(db.albums));
-
-app.post("/albums", requireAdmin, (req, res) => {
-  const { title } = req.body || {};
-  if (!title) return res.status(400).json({ error: "title required" });
-  const album = { id: nanoid(8), title, photos: [] };
-  db.albums.push(album);
-  res.status(201).json(album);
-});
-
-app.delete("/albums/:id", requireAdmin, (req, res) => {
-  const id = req.params.id;
-  const idx = db.albums.findIndex((a) => a.id === id);
-  if (idx === -1) return res.status(404).json({ error: "album not found" });
-  db.albums.splice(idx, 1);
-  res.json({ ok: true });
-});
-
+/* ========= Upload Photo ========= */
 app.post("/photos", requireAdmin, upload.single("file"), async (req, res) => {
   try {
-    const { albumId, url, orientation } = req.body || {};
-    const album = db.albums.find((a) => a.id === albumId);
-    if (!album) return res.status(404).json({ error: "album not found" });
+    const { albumId, orientation } = req.body || {};
+    if (!CLOUD_OK)
+      return res.status(400).json({ error: "Cloudinary not configured" });
 
-    let fileUrl = url;
-    let orient = orientation;
+    // Upload vers Cloudinary dans un sous-dossier par album
+    const up = await cloudUploadFromBuffer(
+      req.file.buffer,
+      `mochi/${albumId || "default"}`
+    );
 
-    if (req.file) {
-      if (!CLOUD_OK)
-        return res.status(400).json({ error: "Cloudinary not configured" });
-      const up = await cloudUploadFromBuffer(
-        req.file.buffer,
-        `mochi/${albumId}`
-      );
-      fileUrl = up.secure_url;
-      orient = up.width >= up.height ? "landscape" : "portrait";
-    }
+    const orient =
+      orientation || (up.width >= up.height ? "landscape" : "portrait");
 
-    if (!fileUrl)
-      return res.status(400).json({ error: "file or url required" });
-    if (!orient) return res.status(400).json({ error: "orientation required" });
-
-    const photo = {
-      id: nanoid(10),
-      albumId,
-      url: fileUrl,
+    res.status(201).json({
+      url: up.secure_url,
+      public_id: up.public_id,
       orientation: orient,
-    };
-    album.photos.push(photo);
-    res.status(201).json(photo);
+    });
   } catch (e) {
+    console.error("❌ Upload error:", e);
     res.status(500).json({ error: e.message || "photo create failed" });
   }
 });
 
-app.delete("/photos/:id", requireAdmin, (req, res) => {
-  const pid = req.params.id;
-  for (const album of db.albums) {
-    const idx = album.photos.findIndex((p) => p.id === pid);
-    if (idx !== -1) {
-      album.photos.splice(idx, 1);
-      return res.json({ ok: true });
-    }
+/* ========= Suppression Cloudinary ========= */
+app.delete("/delete/:public_id", requireAdmin, async (req, res) => {
+  try {
+    await cloudinary.uploader.destroy(req.params.public_id);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error("❌ Delete error:", err);
+    res.status(500).json({ error: "Cloudinary delete failed" });
   }
-  res.status(404).json({ error: "photo not found" });
+});
+
+/* ========= Lecture Cloudinary persistante ========= */
+app.get("/images", async (req, res) => {
+  try {
+    const { resources } = await cloudinary.search
+      .expression("folder:mochi") // lister toutes les images du dossier
+      .sort_by("created_at", "desc")
+      .max_results(100)
+      .execute();
+
+    const images = resources.map((r) => ({
+      url: r.secure_url,
+      public_id: r.public_id,
+      width: r.width,
+      height: r.height,
+      folder: r.folder,
+      created_at: r.created_at,
+    }));
+
+    res.json(images);
+  } catch (err) {
+    console.error("❌ Cloudinary list error:", err);
+    res.status(500).json({ error: "Cloudinary list failed" });
+  }
 });
 
 /* ========= 404 ========= */
