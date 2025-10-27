@@ -198,3 +198,50 @@ app.listen(PORT, "0.0.0.0", () => {
   console.log("CORS allowed:", ALLOWED_ORIGINS);
   console.log(`NODE_ENV: ${NODE_ENV}`);
 });
+// === Photos par album ===
+app.get("/albums/:title/photos", async (req, res) => {
+  try {
+    const folder = `mochi/${req.params.title}`;
+    const result = await cloudinary.api.resources({
+      type: "upload",
+      prefix: folder + "/",
+      max_results: 100,
+    });
+    const list = result.resources.map((r) => ({
+      id: r.public_id,
+      url: r.secure_url,
+      orientation: r.width >= r.height ? "landscape" : "portrait",
+    }));
+    res.json(list);
+  } catch (err) {
+    res.status(500).json({ error: "Failed to list photos" });
+  }
+});
+
+// === Ajout photo à un album existant ===
+app.post(
+  "/albums/:title/photos",
+  requireAdmin,
+  upload.single("file"),
+  async (req, res) => {
+    try {
+      const albumTitle = req.params.title;
+      let fileUrl = req.body.url;
+      let orient = req.body.orientation;
+
+      if (req.file) {
+        const up = await cloudUploadFromBuffer(
+          req.file.buffer,
+          `mochi/${albumTitle}`
+        );
+        fileUrl = up.secure_url;
+        orient = up.width >= up.height ? "landscape" : "portrait";
+      }
+
+      if (!fileUrl) return res.status(400).json({ error: "no file or URL" });
+      res.status(201).json({ url: fileUrl, orientation: orient });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  }
+);
